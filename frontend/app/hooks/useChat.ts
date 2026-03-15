@@ -51,6 +51,7 @@ export function useChat() {
   const [artifacts, setArtifacts] = useState<Artifact[]>([]);
   const [artifactSuggestions, setArtifactSuggestions] =
     useState<ArtifactSuggestions | null>(null);
+  const [sessionId, setSessionId] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
   const sendMessage = useCallback(
@@ -84,6 +85,7 @@ export function useChat() {
           body: JSON.stringify({
             query: query.trim(),
             conversation_history: conversationHistory,
+            session_id: sessionId,
           }),
           signal: abortRef.current.signal,
         });
@@ -201,6 +203,9 @@ export function useChat() {
                   break;
 
                 case "done":
+                  if (data.session_id) {
+                    setSessionId(String(data.session_id));
+                  }
                   setIsLoading(false);
                   break;
               }
@@ -225,8 +230,94 @@ export function useChat() {
         setIsLoading(false);
       }
     },
-    [messages, isLoading],
+    [messages, isLoading, sessionId],
   );
+
+  const startNewSession = useCallback(() => {
+    setSessionId(null);
+    setMessages([]);
+    setAgentStatuses([]);
+    setRunSteps([]);
+    setArtifacts([]);
+    setArtifactSuggestions(null);
+  }, []);
+
+  const loadSession = useCallback(async (sid: string) => {
+    try {
+      const res = await fetch(`http://localhost:8000/api/sessions/${sid}`);
+      if (!res.ok) return;
+      const data = await res.json();
+      setSessionId(sid);
+      setArtifactSuggestions(null);
+
+      // Restore messages
+      const loaded: Message[] = (data.messages || []).map(
+        // biome-ignore lint/suspicious/noExplicitAny: session message shape from API
+        (m: any, i: number) => ({
+          id: `loaded-${i}`,
+          role: m.role as "user" | "assistant",
+          content: m.synthesis || m.content || "",
+        }),
+      );
+      setMessages(loaded);
+
+      // Restore artifacts from the last assistant message
+      const restoredArtifacts: Artifact[] = [];
+      const restoredStatuses: AgentStatus[] = [];
+      const restoredSteps: RunStep[] = [];
+
+      // biome-ignore lint/suspicious/noExplicitAny: session message shape from API
+      const assistantMsgs = (data.messages || []).filter((m: any) => m.role === "assistant");
+      const lastAssistant = assistantMsgs[assistantMsgs.length - 1];
+
+      if (lastAssistant) {
+        // Restore artifacts
+        if (lastAssistant.artifacts && Array.isArray(lastAssistant.artifacts)) {
+          for (const a of lastAssistant.artifacts) {
+            restoredArtifacts.push({
+              type: String(a.type ?? ""),
+              title: String(a.title ?? ""),
+              data: a.data ?? {},
+            });
+          }
+        }
+
+        // Restore agent statuses and run steps from findings
+        if (lastAssistant.agent_findings && Array.isArray(lastAssistant.agent_findings)) {
+          // biome-ignore lint/suspicious/noExplicitAny: finding shape from API
+          for (const f of lastAssistant.agent_findings) {
+            restoredStatuses.push({
+              agent_id: String(f.agent_id ?? ""),
+              status: String(f.status ?? "complete"),
+              message: `${f.domain || ""} analysis complete`,
+            });
+
+            // Restore run history (chain-of-thought steps)
+            if (f.run_history && Array.isArray(f.run_history)) {
+              // biome-ignore lint/suspicious/noExplicitAny: run step shape from API
+              for (const step of f.run_history) {
+                restoredSteps.push({
+                  type: String(step.type ?? "thought") as RunStep["type"],
+                  agent_id: String(step.agent_id ?? f.agent_id ?? ""),
+                  tool: step.tool ? String(step.tool) : undefined,
+                  input: step.input ? String(step.input) : undefined,
+                  output: step.output ? String(step.output) : undefined,
+                  content: step.content ? String(step.content) : undefined,
+                  timestamp: String(step.timestamp ?? ""),
+                });
+              }
+            }
+          }
+        }
+      }
+
+      setArtifacts(restoredArtifacts);
+      setAgentStatuses(restoredStatuses);
+      setRunSteps(restoredSteps);
+    } catch {
+      // ignore fetch errors
+    }
+  }, []);
 
   return {
     messages,
@@ -235,6 +326,9 @@ export function useChat() {
     runSteps,
     artifacts,
     artifactSuggestions,
+    sessionId,
     sendMessage,
+    startNewSession,
+    loadSession,
   };
 }
