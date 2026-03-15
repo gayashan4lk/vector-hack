@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm install:*)",
+      "Bash(uv sync:*)",
+      "Bash(npx next:*)",
+      "Bash(uv run:*)"
+    ]
+  }
+}
